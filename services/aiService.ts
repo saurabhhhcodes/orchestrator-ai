@@ -45,9 +45,10 @@ const generateWithOpenAI = async (useCase: string): Promise<WorkflowResult> => {
           role: "user",
           content: `Business Use Case: "${useCase}"\n\nGenerate a workflow following this JSON schema:\n\n{
   "workflow_metadata": {
-    "name": "string (Professional, technical name)",
+    "workflow_name": "string (Professional, technical name)",
+    "instance_id": "string (e.g., instance_v1.0.0)",
     "is_template": "boolean",
-    "version": "string (e.g., 1.0.0)"
+    "version": "string (e.g., v1.0.0)"
   },
   "steps": [
     {

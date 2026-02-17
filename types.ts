@@ -1,7 +1,8 @@
 export type LLMProvider = 'openai';
 
 export interface WorkflowMetadata {
-  name: string;
+  workflow_name: string;
+  instance_id: string;
   is_template: boolean;
   version: string;
 }
@@ -14,6 +15,7 @@ export interface InputConfig {
 export interface WorkflowStep {
   step_id: number;
   agent_type: string;
+  agent_ids?: string[]; // IDs of specific agents from library
   action_description: string;
   timing_logic: string;
   input_config: InputConfig;
