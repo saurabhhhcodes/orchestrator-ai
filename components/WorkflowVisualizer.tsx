@@ -487,15 +487,21 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
     setDraggedId(null);
   };
 
-  // ── Reliable position measurement via offsetParent traversal ──────────────
+  // ── Reliable position measurement via getBoundingClientRect ──────────────
   const measureRects = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    const cvRect = canvas.getBoundingClientRect();
     const rects: Record<number, NodeRect> = {};
     (Object.entries(cardRefs.current) as [string, HTMLDivElement | null][]).forEach(([idStr, el]) => {
       if (!el) return;
-      const { x, y } = getOffsetRelativeTo(el, canvas);
-      rects[Number(idStr)] = { x, y, w: el.offsetWidth, h: el.offsetHeight };
+      const elRect = el.getBoundingClientRect();
+      rects[Number(idStr)] = {
+        x: elRect.left - cvRect.left + canvas.scrollLeft,
+        y: elRect.top - cvRect.top + canvas.scrollTop,
+        w: elRect.width,
+        h: elRect.height
+      };
     });
     if (Object.keys(rects).length > 0) setNodeRects(rects);
   }, []);
@@ -528,10 +534,16 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
   const connectorPaths: { path: string; fr: NodeRect; tr: NodeRect; fromId: number; toId: number }[] = [];
 
   data.steps.forEach((step, idx) => {
-    // If user explicitly defined connections, use them. 
+    // If user explicitly defined connections (even empty array), use them. 
     // Otherwise implicitly connect to the immediate chronological previous step if it exists.
-    const explicitDeps = step.depends_on || (step.auto_depends_on ? step.auto_depends_on : []);
-    const deps = explicitDeps.length > 0 ? explicitDeps : (idx > 0 ? [data.steps[idx - 1].step_id] : []);
+    let deps: number[];
+    if (step.depends_on) {
+      deps = step.depends_on; // Respect explicit selections, even if []
+    } else if (step.auto_depends_on && step.auto_depends_on.length > 0) {
+      deps = step.auto_depends_on;
+    } else {
+      deps = idx > 0 ? [data.steps[idx - 1].step_id] : [];
+    }
 
     deps.forEach(depId => {
       const fr = nodeRects[depId];
@@ -640,10 +652,10 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
             <div className="relative p-12 min-w-max min-h-full" ref={canvasRef}>
               {/* SVG overlay */}
               <svg
-                className="absolute inset-0 pointer-events-none"
-                width={svgW}
-                height={svgH}
-                style={{ position: 'absolute', top: 0, left: 0, overflow: 'visible', zIndex: 0 }}
+                className="absolute top-0 left-0 pointer-events-none"
+                width={Math.max(svgW, 2000)}
+                height={Math.max(svgH, 1000)}
+                style={{ overflow: 'visible', zIndex: 0 }}
               >
                 <defs>
                   <linearGradient id="cg" x1="0" y1="0" x2="1" y2="0">

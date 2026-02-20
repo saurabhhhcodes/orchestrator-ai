@@ -137,7 +137,7 @@ export const StepEditor: React.FC<StepEditorProps> = ({
                             >
                                 {agentTypes.map(t => <option key={t} value={t}>{t}</option>)}
                             </select>
-                            <button
+                            <button type="button"
                                 onClick={() => setShowAddType(t => !t)}
                                 className="px-3 py-2 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg text-sm flex items-center gap-1.5 transition-colors"
                             >
@@ -155,7 +155,7 @@ export const StepEditor: React.FC<StepEditorProps> = ({
                                     className="flex-1 px-3 py-2 border border-indigo-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
                                     onKeyDown={e => { if (e.key === 'Enter') handleAddCustomType(); }}
                                 />
-                                <button onClick={handleAddCustomType} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">Add</button>
+                                <button type="button" onClick={handleAddCustomType} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">Add</button>
                             </div>
                         )}
                     </div>
@@ -223,7 +223,7 @@ export const StepEditor: React.FC<StepEditorProps> = ({
                                 predecessorSteps.map(pred => {
                                     const isSelected = (edited.depends_on || []).includes(pred.step_id);
                                     return (
-                                        <button
+                                        <button type="button"
                                             key={pred.step_id}
                                             onClick={() => {
                                                 const cur = edited.depends_on || [];
@@ -248,7 +248,7 @@ export const StepEditor: React.FC<StepEditorProps> = ({
                         <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Timing Logic</label>
                         <div className="flex flex-wrap gap-2 mb-3">
                             {['Trigger', 'Manual', 'Auto', 'Recurring'].map(t => (
-                                <button
+                                <button type="button"
                                     key={t}
                                     onClick={() => update({ timing_logic: t })}
                                     className={`px-4 py-2 rounded-xl text-sm font-medium border transition-colors ${edited.timing_logic === t ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-300 hover:text-indigo-600'}`}
@@ -311,7 +311,7 @@ export const StepEditor: React.FC<StepEditorProps> = ({
                         <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Input Type (SRS FR-SC-02)</label>
                         <div className="grid grid-cols-3 gap-2 mb-3">
                             {([['prompt', '💬 Prompt'], ['script', '📜 Script'], ['prior_output', '🔗 Prior Output']] as [string, string][]).map(([val, label]) => (
-                                <button
+                                <button type="button"
                                     key={val}
                                     onClick={() => updateInput({ input_type: val as any })}
                                     className={`py-2 rounded-lg text-xs font-medium transition-all border ${edited.input_config.input_type === val ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}
@@ -346,7 +346,7 @@ export const StepEditor: React.FC<StepEditorProps> = ({
                                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-500 resize-none bg-white"
                                 />
                                 <input ref={fileInputRef} type="file" className="hidden" accept=".js,.py,.sh,.ts" onChange={handleFileUpload} />
-                                <button
+                                <button type="button"
                                     onClick={() => fileInputRef.current?.click()}
                                     className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm hover:bg-slate-50 transition-colors"
                                 >
@@ -437,7 +437,7 @@ export const StepEditor: React.FC<StepEditorProps> = ({
                 {/* Footer */}
                 <div className="shrink-0 border-t border-slate-200 px-6 py-4 bg-slate-50 flex items-center justify-end gap-3">
                     <button onClick={onClose} className="px-5 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-medium transition-colors text-sm">Cancel</button>
-                    <button
+                    <button type="button"
                         onClick={handleSave}
                         className="px-5 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg font-medium hover:shadow-lg transition-all flex items-center gap-2 text-sm"
                     >

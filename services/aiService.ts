@@ -46,7 +46,7 @@ const generateWithOpenAI = async (useCase: string, learningContext: string = '')
         { role: "system", content: systemContent },
         {
           role: "user",
-          content: `Business Use Case: "${useCase}"\n\nGenerate a workflow following this JSON schema:\n\n{
+          content: `Business Use Case: "${useCase}"\n\nGenerate a comprehensive, production-ready workflow of EXACTLY 8 to 12 steps following this JSON schema:\n\n{
   "workflow_metadata": {
     "workflow_name": "string (Professional, technical name)",
     "instance_id": "string (e.g., instance_v1.0.0)",
@@ -60,7 +60,7 @@ const generateWithOpenAI = async (useCase: string, learningContext: string = '')
       "action_description": "string (detailed technical description)",
       "timing_logic": "string (Manual/Auto/Trigger/Recurring)",
       "parallel_group": "string or null (steps with same group run in parallel)",
-      "depends_on": "array of step_ids this step waits for. MUST NOT BE EMPTY unless it is step 1. For sequential flows without parallel_group, always include [previous_step_id].",
+      "depends_on": "array of step_ids this step waits for. For step 1 this MUST be []. For step > 1, this MUST contain at least one valid prior step_id (e.g., [1] for step 2) or else the workflow will break.",
       "input_config": {
         "source": "string (e.g., PM_Input or Agent_ID_1_JSON_Output)",
         "type": "string (e.g., JSON, CSV, PNG, Raw Text)",
