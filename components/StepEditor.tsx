@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { WorkflowStep, InputConfig } from '../types';
-import { AGENT_LIBRARY, Agent, getAgentsByType } from '../data/agentLibrary';
-import { X, Plus, Trash2, Save } from 'lucide-react';
+import { AGENT_LIBRARY } from '../data/agentLibrary';
+import { getAgentTypes, addCustomAgentType } from '../services/dbService';
+import { X, Save, Search, Upload, MessageSquare, Plus } from 'lucide-react';
 
 interface StepEditorProps {
     step: WorkflowStep | null;
@@ -9,244 +10,436 @@ interface StepEditorProps {
     onClose: () => void;
     onSave: (step: WorkflowStep) => void;
     isNewStep?: boolean;
+    insertAfterStepId?: number;
+    allSteps?: WorkflowStep[];
 }
-
-const AGENT_TYPES = [
-    'Content', 'Design', 'Scheduler', 'Heatmaps', 'Bounce',
-    'Subject Line Checker', 'Scraper', 'CRM', 'Outreach', 'Analytics'
-];
-
-const TIMING_OPTIONS = ['Manual', 'Auto', 'Trigger', 'Recurring'];
 
 export const StepEditor: React.FC<StepEditorProps> = ({
     step,
     isOpen,
     onClose,
     onSave,
-    isNewStep = false
+    isNewStep = false,
+    insertAfterStepId,
+    allSteps = [],
 }) => {
-    const [editedStep, setEditedStep] = useState<WorkflowStep>({
+    const DEFAULT: WorkflowStep = {
         step_id: 1,
         agent_type: 'Content',
         agent_ids: [],
         action_description: '',
         timing_logic: 'Manual',
-        input_config: { source: 'PM_Input', type: 'Raw_Text' },
-        output_storage: ''
-    });
+        input_config: { source: 'PM_Input', type: 'Raw_Text', input_type: 'prompt', prompt_text: '' },
+        output_storage: '',
+        inline_comment: '',
+    };
 
-    const [availableAgents, setAvailableAgents] = useState<Agent[]>([]);
-    const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
+    const [edited, setEdited] = useState<WorkflowStep>(DEFAULT);
+    const [agentSearch, setAgentSearch] = useState('');
+    const [agentTypes, setAgentTypes] = useState<string[]>(getAgentTypes());
+    const [newTypeInput, setNewTypeInput] = useState('');
+    const [showAddType, setShowAddType] = useState(false);
+    const [scriptFile, setScriptFile] = useState<File | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         if (step) {
-            setEditedStep(step);
-            setSelectedAgents(step.agent_ids || []);
+            setEdited({ ...step });
+        } else {
+            setEdited(DEFAULT);
         }
-    }, [step]);
+        setAgentSearch('');
+        setScriptFile(null);
+        setNewTypeInput('');
+        setShowAddType(false);
+        setAgentTypes(getAgentTypes());
+    }, [step, isOpen]);
 
-    useEffect(() => {
-        const agents = getAgentsByType(editedStep.agent_type);
-        setAvailableAgents(agents);
-    }, [editedStep.agent_type]);
+    const update = (patch: Partial<WorkflowStep>) => setEdited(prev => ({ ...prev, ...patch }));
+    const updateInput = (patch: Partial<InputConfig>) =>
+        setEdited(prev => ({ ...prev, input_config: { ...prev.input_config, ...patch } }));
 
-    const handleSave = () => {
-        onSave({
-            ...editedStep,
-            agent_ids: selectedAgents
-        });
-        onClose();
+    const filteredAgents = AGENT_LIBRARY.filter(a =>
+        a.type === edited.agent_type &&
+        (agentSearch === '' || a.name.toLowerCase().includes(agentSearch.toLowerCase()) || a.description.toLowerCase().includes(agentSearch.toLowerCase()))
+    );
+
+    const toggleAgent = (id: string) => {
+        const ids = edited.agent_ids || [];
+        update({ agent_ids: ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id] });
     };
 
-    const toggleAgent = (agentId: string) => {
-        setSelectedAgents(prev =>
-            prev.includes(agentId)
-                ? prev.filter(id => id !== agentId)
-                : [...prev, agentId]
-        );
+    const handleAddCustomType = () => {
+        const trimmed = newTypeInput.trim();
+        if (trimmed && !agentTypes.includes(trimmed)) {
+            addCustomAgentType(trimmed);
+            const updated = getAgentTypes();
+            setAgentTypes(updated);
+            update({ agent_type: trimmed });
+        }
+        setNewTypeInput('');
+        setShowAddType(false);
+    };
+
+    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setScriptFile(file);
+        const reader = new FileReader();
+        reader.onload = (ev) => updateInput({ script_content: ev.target?.result as string });
+        reader.readAsText(file);
+    };
+
+    const predecessorSteps = allSteps.filter(s => s.step_id < edited.step_id);
+
+    const handleSave = () => {
+        onSave(edited);
+        onClose();
     };
 
     if (!isOpen) return null;
 
     return (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
                 {/* Header */}
-                <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-4 flex items-center justify-between">
-                    <h2 className="text-xl font-bold">
-                        {isNewStep ? '➕ Add New Step' : '✏️ Edit Step'}
-                    </h2>
-                    <button
-                        onClick={onClose}
-                        className="p-2 hover:bg-white/20 rounded-lg transition-colors"
-                    >
-                        <X className="w-5 h-5" />
-                    </button>
+                <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-4 flex items-center justify-between shrink-0">
+                    <h2 className="text-lg font-bold">{isNewStep ? '➕ Add Step' : '✏️ Edit Step'}</h2>
+                    <button onClick={onClose} className="p-1.5 hover:bg-white/20 rounded-lg transition-colors"><X className="w-5 h-5" /></button>
                 </div>
 
-                {/* Content */}
-                <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                {/* Scrollable body */}
+                <div className="flex-1 overflow-y-auto p-6 space-y-5">
+
                     {/* Step ID */}
                     <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">
-                            Step ID
-                        </label>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Step ID</label>
                         <input
                             type="number"
-                            value={editedStep.step_id}
-                            onChange={(e) => setEditedStep({ ...editedStep, step_id: parseInt(e.target.value) })}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            value={edited.step_id}
+                            onChange={e => update({ step_id: parseInt(e.target.value) || 1 })}
                             disabled={!isNewStep}
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-slate-50 disabled:text-slate-400"
                         />
+                        {isNewStep && (
+                            <p className="text-xs text-slate-400 mt-1">Step IDs will be auto-reindexed after insertion.</p>
+                        )}
                     </div>
 
                     {/* Agent Type */}
                     <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">
-                            Agent Type
-                        </label>
-                        <select
-                            value={editedStep.agent_type}
-                            onChange={(e) => setEditedStep({ ...editedStep, agent_type: e.target.value })}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                        >
-                            {AGENT_TYPES.map(type => (
-                                <option key={type} value={type}>{type}</option>
-                            ))}
-                        </select>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Agent Type</label>
+                        <div className="flex gap-2">
+                            <select
+                                value={edited.agent_type}
+                                onChange={e => update({ agent_type: e.target.value, agent_ids: [] })}
+                                className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            >
+                                {agentTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                            <button
+                                onClick={() => setShowAddType(t => !t)}
+                                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg text-sm flex items-center gap-1.5 transition-colors"
+                            >
+                                <Plus className="w-3.5 h-3.5" />
+                                New Type
+                            </button>
+                        </div>
+                        {showAddType && (
+                            <div className="flex gap-2 mt-2">
+                                <input
+                                    type="text"
+                                    value={newTypeInput}
+                                    onChange={e => setNewTypeInput(e.target.value)}
+                                    placeholder="e.g., Notification"
+                                    className="flex-1 px-3 py-2 border border-indigo-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
+                                    onKeyDown={e => { if (e.key === 'Enter') handleAddCustomType(); }}
+                                />
+                                <button onClick={handleAddCustomType} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">Add</button>
+                            </div>
+                        )}
                     </div>
 
-                    {/* Agent Library Selection */}
-                    {availableAgents.length > 0 && (
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                Select Agents from Library
-                            </label>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-60 overflow-y-auto p-3 bg-gray-50 rounded-lg">
-                                {availableAgents.map(agent => (
-                                    <div
-                                        key={agent.id}
-                                        onClick={() => toggleAgent(agent.id)}
-                                        className={`p-3 rounded-lg border-2 cursor-pointer transition-all ${selectedAgents.includes(agent.id)
-                                                ? 'border-indigo-500 bg-indigo-50'
-                                                : 'border-gray-200 hover:border-gray-300'
-                                            }`}
-                                    >
-                                        <div className="flex items-start gap-2">
-                                            <span className="text-2xl">{agent.icon}</span>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="font-semibold text-sm text-gray-900 truncate">
-                                                    {agent.name}
-                                                </div>
-                                                <div className="text-xs text-gray-600 line-clamp-2">
-                                                    {agent.description}
-                                                </div>
-                                            </div>
-                                            {selectedAgents.includes(agent.id) && (
-                                                <div className="text-indigo-600">✓</div>
-                                            )}
-                                        </div>
-                                    </div>
-                                ))}
+                    {/* Agent Library — searchable dropdown */}
+                    <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Select Agents from Library</label>
+                        <div className="border border-slate-200 rounded-xl overflow-hidden">
+                            <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-200 bg-slate-50">
+                                <Search className="w-4 h-4 text-slate-400" />
+                                <input
+                                    type="text"
+                                    value={agentSearch}
+                                    onChange={e => setAgentSearch(e.target.value)}
+                                    placeholder="Search agents..."
+                                    className="flex-1 text-sm bg-transparent outline-none text-slate-700 placeholder-slate-400"
+                                />
                             </div>
-                            {selectedAgents.length > 0 && (
-                                <div className="mt-2 text-sm text-gray-600">
-                                    Selected: {selectedAgents.length} agent(s)
-                                </div>
-                            )}
+                            <div className="max-h-40 overflow-y-auto">
+                                {filteredAgents.length === 0 ? (
+                                    <p className="text-sm text-slate-400 text-center py-4">No agents for this type</p>
+                                ) : (
+                                    filteredAgents.map(agent => (
+                                        <div
+                                            key={agent.id}
+                                            onClick={() => toggleAgent(agent.id)}
+                                            className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-indigo-50 border-b border-slate-100 last:border-0 transition-colors ${(edited.agent_ids || []).includes(agent.id) ? 'bg-indigo-50' : ''}`}
+                                        >
+                                            <span className="text-lg">{agent.icon}</span>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="text-sm font-medium text-slate-800">{agent.name}</div>
+                                                <div className="text-xs text-slate-500 truncate">{agent.description}</div>
+                                            </div>
+                                            {(edited.agent_ids || []).includes(agent.id) && <span className="text-indigo-600 text-sm font-bold">✓</span>}
+                                        </div>
+                                    ))
+                                )}
+                            </div>
                         </div>
-                    )}
+                        {(edited.agent_ids || []).length > 0 && (
+                            <p className="text-xs text-indigo-600 mt-1">{(edited.agent_ids || []).length} agent(s) selected</p>
+                        )}
+                    </div>
 
                     {/* Action Description */}
                     <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">
-                            Action Description
-                        </label>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Action Description</label>
                         <textarea
-                            value={editedStep.action_description}
-                            onChange={(e) => setEditedStep({ ...editedStep, action_description: e.target.value })}
+                            value={edited.action_description}
+                            onChange={e => update({ action_description: e.target.value })}
                             rows={3}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
-                            placeholder="Describe what this step does..."
+                            placeholder="Describe what this step does in detail..."
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
                         />
+                    </div>
+
+                    {/* Connections (depends_on) */}
+                    <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Incoming Connections</label>
+                        <p className="text-xs text-slate-400 mb-2">Select which previous steps must complete before this step begins. (Creates branches & parallel paths)</p>
+                        <div className="flex flex-wrap gap-2">
+                            {predecessorSteps.length === 0 ? (
+                                <p className="text-sm text-slate-400 italic">This is the first step. No incoming connections.</p>
+                            ) : (
+                                predecessorSteps.map(pred => {
+                                    const isSelected = (edited.depends_on || []).includes(pred.step_id);
+                                    return (
+                                        <button
+                                            key={pred.step_id}
+                                            onClick={() => {
+                                                const cur = edited.depends_on || [];
+                                                update({ depends_on: isSelected ? cur.filter(id => id !== pred.step_id) : [...cur, pred.step_id].sort() });
+                                            }}
+                                            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1.5
+                                                ${isSelected ? 'bg-indigo-100 border-indigo-300 text-indigo-700' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100 hover:border-slate-300'}`}
+                                        >
+                                            <span className="w-4 h-4 rounded-full bg-white flex items-center justify-center text-[10px] font-bold shadow-sm shrink-0">
+                                                {pred.step_id}
+                                            </span>
+                                            <span className="truncate max-w-[120px]">{pred.action_description || pred.agent_type}</span>
+                                        </button>
+                                    );
+                                })
+                            )}
+                        </div>
                     </div>
 
                     {/* Timing Logic */}
                     <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">
-                            Timing Logic
-                        </label>
-                        <select
-                            value={editedStep.timing_logic}
-                            onChange={(e) => setEditedStep({ ...editedStep, timing_logic: e.target.value })}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                        >
-                            {TIMING_OPTIONS.map(option => (
-                                <option key={option} value={option}>{option}</option>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Timing Logic</label>
+                        <div className="flex flex-wrap gap-2 mb-3">
+                            {['Trigger', 'Manual', 'Auto', 'Recurring'].map(t => (
+                                <button
+                                    key={t}
+                                    onClick={() => update({ timing_logic: t })}
+                                    className={`px-4 py-2 rounded-xl text-sm font-medium border transition-colors ${edited.timing_logic === t ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-300 hover:text-indigo-600'}`}
+                                >
+                                    {t}
+                                </button>
                             ))}
-                        </select>
+                        </div>
+                        {edited.timing_logic === 'Trigger' && (
+                            <textarea
+                                value={edited.trigger_condition || ''}
+                                onChange={e => update({ trigger_condition: e.target.value })}
+                                placeholder="Describe the trigger condition (e.g., 'When a new lead is added to Salesforce')"
+                                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
+                                rows={2}
+                            />
+                        )}
+                        {edited.timing_logic === 'Recurring' && (
+                            <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs text-slate-500 mb-1">Period</label>
+                                        <select
+                                            value={edited.recurring_period || 'daily'}
+                                            onChange={e => update({ recurring_period: e.target.value as any })}
+                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
+                                        >
+                                            <option value="hourly">Hourly</option>
+                                            <option value="daily">Daily</option>
+                                            <option value="weekly">Weekly</option>
+                                            <option value="monthly">Monthly</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs text-slate-500 mb-1">Time (Optional)</label>
+                                        <input
+                                            type="time"
+                                            value={edited.recurring_time || ''}
+                                            onChange={e => update({ recurring_time: e.target.value })}
+                                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
+                                        />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label className="block text-xs text-slate-500 mb-1">Stop Condition (Optional)</label>
+                                    <input
+                                        type="text"
+                                        value={edited.recurring_stop_condition || ''}
+                                        onChange={e => update({ recurring_stop_condition: e.target.value })}
+                                        placeholder="e.g., Run until target audience size reaches 10,000"
+                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500"
+                                    />
+                                    <p className="text-xs text-slate-400 mt-1">If empty, will run indefinitely based on the period.</p>
+                                </div>
+                            </div>
+                        )}
                     </div>
+                    {/* Input Logic */}
+                    <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Input Type (SRS FR-SC-02)</label>
+                        <div className="grid grid-cols-3 gap-2 mb-3">
+                            {([['prompt', '💬 Prompt'], ['script', '📜 Script'], ['prior_output', '🔗 Prior Output']] as [string, string][]).map(([val, label]) => (
+                                <button
+                                    key={val}
+                                    onClick={() => updateInput({ input_type: val as any })}
+                                    className={`py-2 rounded-lg text-xs font-medium transition-all border ${edited.input_config.input_type === val ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
 
-                    {/* Input Configuration */}
-                    <div className="grid grid-cols-2 gap-4">
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                Input Source
-                            </label>
-                            <input
-                                type="text"
-                                value={editedStep.input_config.source}
-                                onChange={(e) => setEditedStep({
-                                    ...editedStep,
-                                    input_config: { ...editedStep.input_config, source: e.target.value }
-                                })}
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                                placeholder="e.g., PM_Input, Step_1"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-2">
-                                Input Type
-                            </label>
-                            <input
-                                type="text"
-                                value={editedStep.input_config.type}
-                                onChange={(e) => setEditedStep({
-                                    ...editedStep,
-                                    input_config: { ...editedStep.input_config, type: e.target.value }
-                                })}
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                                placeholder="e.g., Raw_Text, JSON"
-                            />
-                        </div>
+                        {/* Input sub-fields */}
+                        {edited.input_config.input_type === 'prompt' && (
+                            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                                <label className="block text-xs font-semibold text-blue-700 mb-1.5">Prompt</label>
+                                <textarea
+                                    value={edited.input_config.prompt_text || ''}
+                                    onChange={e => updateInput({ prompt_text: e.target.value, source: 'PM_Input', type: 'Raw_Text' })}
+                                    rows={4}
+                                    placeholder="Enter the prompt to be sent to the AI agent for this step..."
+                                    className="w-full px-3 py-2 border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-400 resize-none bg-white"
+                                />
+                            </div>
+                        )}
+
+                        {edited.input_config.input_type === 'script' && (
+                            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                                <label className="block text-xs font-semibold text-slate-700 mb-1.5">Script Content</label>
+                                <textarea
+                                    value={edited.input_config.script_content || ''}
+                                    onChange={e => updateInput({ script_content: e.target.value, source: 'Script', type: 'Script' })}
+                                    rows={5}
+                                    placeholder="Paste or type your JS/Python/other script here..."
+                                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-500 resize-none bg-white"
+                                />
+                                <input ref={fileInputRef} type="file" className="hidden" accept=".js,.py,.sh,.ts" onChange={handleFileUpload} />
+                                <button
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm hover:bg-slate-50 transition-colors"
+                                >
+                                    <Upload className="w-4 h-4" />
+                                    {scriptFile ? `Loaded: ${scriptFile.name}` : 'Upload Script File'}
+                                </button>
+                            </div>
+                        )}
+
+                        {edited.input_config.input_type === 'prior_output' && (
+                            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                                <label className="block text-xs font-semibold text-emerald-700 mb-1.5">Select Prior Step Output(s)</label>
+                                {predecessorSteps.length === 0 ? (
+                                    <p className="text-xs text-emerald-600">No predecessor steps available.</p>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {predecessorSteps.map(ps => {
+                                            const isSelected = (edited.input_config.prior_step_ids || []).includes(ps.step_id);
+                                            return (
+                                                <label key={ps.step_id} className="flex items-start gap-3 cursor-pointer">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={isSelected}
+                                                        onChange={() => {
+                                                            const ids = edited.input_config.prior_step_ids || [];
+                                                            updateInput({
+                                                                prior_step_ids: isSelected ? ids.filter(id => id !== ps.step_id) : [...ids, ps.step_id],
+                                                                source: `Step_${ps.step_id}_Output`,
+                                                                type: 'Prior_Output',
+                                                            });
+                                                        }}
+                                                        className="w-4 h-4 text-emerald-600 rounded mt-0.5"
+                                                    />
+                                                    <div>
+                                                        <div className="text-sm text-slate-700 font-medium">Step {ps.step_id}: {ps.action_description.slice(0, 50)}{ps.action_description.length > 50 ? '…' : ''}</div>
+                                                        {ps.output_storage && (
+                                                            <div className="text-xs text-emerald-700 font-mono mt-0.5">📁 {ps.output_storage}</div>
+                                                        )}
+                                                    </div>
+                                                </label>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
 
                     {/* Output Storage */}
                     <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">
-                            Output Storage
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Output Storage</label>
+                        <input
+                            type="text"
+                            value={edited.output_storage}
+                            onChange={e => update({ output_storage: e.target.value })}
+                            placeholder="e.g., s3://bucket/output.json, postgres://table, local://output/"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        />
+                    </div>
+
+                    {/* Parallel Group */}
+                    <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Parallel Group <span className="text-slate-400 font-normal">(optional — steps with same group run concurrently)</span></label>
+                        <input
+                            type="text"
+                            value={edited.parallel_group || ''}
+                            onChange={e => update({ parallel_group: e.target.value || undefined })}
+                            placeholder="e.g., group_A  (leave empty for sequential)"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        />
+                    </div>
+
+                    {/* Inline Comment */}
+                    <div>
+                        <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                            <MessageSquare className="w-3.5 h-3.5" /> Inline Comment (FR-WE-07)
                         </label>
                         <input
                             type="text"
-                            value={editedStep.output_storage}
-                            onChange={(e) => setEditedStep({ ...editedStep, output_storage: e.target.value })}
-                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                            placeholder="e.g., s3://bucket/path, database://table"
+                            value={edited.inline_comment || ''}
+                            onChange={e => update({ inline_comment: e.target.value })}
+                            placeholder="Internal note for team reference..."
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                         />
                     </div>
                 </div>
 
                 {/* Footer */}
-                <div className="border-t border-gray-200 px-6 py-4 bg-gray-50 flex items-center justify-end gap-3">
-                    <button
-                        onClick={onClose}
-                        className="px-6 py-2 text-gray-700 hover:bg-gray-200 rounded-lg font-medium transition-colors"
-                    >
-                        Cancel
-                    </button>
+                <div className="shrink-0 border-t border-slate-200 px-6 py-4 bg-slate-50 flex items-center justify-end gap-3">
+                    <button onClick={onClose} className="px-5 py-2 text-slate-600 hover:bg-slate-200 rounded-lg font-medium transition-colors text-sm">Cancel</button>
                     <button
                         onClick={handleSave}
-                        className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg font-medium hover:shadow-lg transition-all flex items-center gap-2"
+                        className="px-5 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg font-medium hover:shadow-lg transition-all flex items-center gap-2 text-sm"
                     >
                         <Save className="w-4 h-4" />
                         Save Step

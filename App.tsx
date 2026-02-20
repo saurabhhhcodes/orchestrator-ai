@@ -1,412 +1,526 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { generateWorkflow } from './services/aiService';
 import { WorkflowResult, LLMProvider, WorkflowStep } from './types';
 import WorkflowVisualizer from './components/WorkflowVisualizer';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
 import { StepEditor } from './components/StepEditor';
 import { TemplateLibrary } from './components/TemplateLibrary';
+import LoginScreen from './components/LoginScreen';
+import AgentLibraryPage from './components/AgentLibraryPage';
+import LearningDashboard from './components/LearningDashboard';
+import ExecutionMonitor from './components/ExecutionMonitor';
 import { saveTemplate } from './services/templateService';
+import { savePrompt, saveWorkflowToHistory } from './services/dbService';
+import { recordWorkflowFeedback } from './services/aiService';
 import {
-  Layout,
-  Sparkles,
-  Code2,
-  Play,
-  Loader2,
-  AlertCircle,
-  ClipboardCopy,
-  Check,
-  Cpu,
-  Edit3,
-  Save,
-  FileText,
-  X
+  Sparkles, Play, Loader2, AlertCircle, Check, Edit3, Save,
+  FileText, X, BarChart2, Bot, Brain, PlusSquare, Undo2, Redo2,
+  MessageSquare, ChevronRight, History, Zap
 } from 'lucide-react';
 
+// ---- Sidebar nav items ----
+type NavItem = 'prompt' | 'workflow' | 'analytics' | 'templates' | 'agents' | 'learning' | 'execution';
+const NAV: { id: NavItem; label: string; icon: React.ReactNode }[] = [
+  { id: 'prompt', label: 'Prompt', icon: <MessageSquare className="w-5 h-5" /> },
+  { id: 'workflow', label: 'Workflow', icon: <Zap className="w-5 h-5" /> },
+  { id: 'analytics', label: 'Analytics', icon: <BarChart2 className="w-5 h-5" /> },
+  { id: 'templates', label: 'Templates', icon: <FileText className="w-5 h-5" /> },
+  { id: 'agents', label: 'Agent Library', icon: <Bot className="w-5 h-5" /> },
+  { id: 'learning', label: 'Learning', icon: <Brain className="w-5 h-5" /> },
+  { id: 'execution', label: 'Execution', icon: <Play className="w-5 h-5" /> },
+];
+
+// ---- Undo/Redo history ----
+interface HistoryEntry { steps: WorkflowStep[] }
+
 const App: React.FC = () => {
-  const [prompt, setPrompt] = useState<string>('');
-  const [provider, setProvider] = useState<LLMProvider>('openai');
-  const [workflow, setWorkflow] = useState<WorkflowResult | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
+  // Auth
+  const [isLoggedIn, setIsLoggedIn] = useState(() => sessionStorage.getItem('oai_logged_in') === 'true');
+  // Navigation
+  const [activeNav, setActiveNav] = useState<NavItem>('prompt');
+  // Prompt
+  const [prompt, setPrompt] = useState('');
+  const [provider] = useState<LLMProvider>('openai');
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'visual' | 'json' | 'analytics'>('visual');
+  // Workflow
+  const [workflow, setWorkflow] = useState<WorkflowResult | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  // Undo/Redo
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [historyIdx, setHistoryIdx] = useState(-1);
+  // Step editor
+  const [editingStep, setEditingStep] = useState<WorkflowStep | null>(null);
+  const [isNewStep, setIsNewStep] = useState(false);
+  const [insertAfterStepId, setInsertAfterStepId] = useState<number | undefined>();
+  // Template library (modal)
+  const [showTemplateModal, setShowTemplateModal] = useState(false);
+  // Save as template UX
+  const [showSaveTemplate, setShowSaveTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+  const [templateDesc, setTemplateDesc] = useState('');
+  const [templateSaved, setTemplateSaved] = useState(false);
+  // Copy JSON
   const [copied, setCopied] = useState(false);
 
-  // Edit mode states
-  const [editMode, setEditMode] = useState(false);
-  const [editingStep, setEditingStep] = useState<WorkflowStep | null>(null);
-  const [isStepEditorOpen, setIsStepEditorOpen] = useState(false);
-  const [isNewStep, setIsNewStep] = useState(false);
-  const [isTemplateLibraryOpen, setIsTemplateLibraryOpen] = useState(false);
-  const [saveTemplateModalOpen, setSaveTemplateModalOpen] = useState(false);
-  const [templateName, setTemplateName] = useState('');
-  const [templateDescription, setTemplateDescription] = useState('');
+  // ---- Undo/Redo helpers ----
+  const pushHistory = useCallback((steps: WorkflowStep[]) => {
+    setHistory(prev => {
+      const trimmed = prev.slice(0, historyIdx + 1);
+      return [...trimmed, { steps }].slice(-50);
+    });
+    setHistoryIdx(prev => Math.min(prev + 1, 49));
+  }, [historyIdx]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const undo = () => {
+    if (!workflow || historyIdx <= 0) return;
+    const entry = history[historyIdx - 1];
+    setHistoryIdx(i => i - 1);
+    setWorkflow(w => w ? { ...w, steps: entry.steps } : w);
+  };
+
+  const redo = () => {
+    if (!workflow || historyIdx >= history.length - 1) return;
+    const entry = history[historyIdx + 1];
+    setHistoryIdx(i => i + 1);
+    setWorkflow(w => w ? { ...w, steps: entry.steps } : w);
+  };
+
+  // ---- Workflow update with undo push ----
+  const updateSteps = (steps: WorkflowStep[]) => {
+    if (!workflow) return;
+    const reindexed = steps.map((s, i) => ({ ...s, step_id: i + 1 }));
+    pushHistory(workflow.steps);
+    setWorkflow({ ...workflow, steps: reindexed });
+  };
+
+  // ---- Generate workflow ----
+  const handleGenerate = async () => {
     if (!prompt.trim()) return;
-
-    setLoading(true);
+    setIsLoading(true);
     setError(null);
-    setWorkflow(null);
-    setEditMode(false);
-
     try {
+      savePrompt(prompt);
+      // generateWorkflow is async (useCase, provider) directly
       const result = await generateWorkflow(prompt, provider);
       setWorkflow(result);
-      setActiveTab('visual');
-    } catch (err) {
-      setError("Failed to generate workflow. Please try again with a more specific use case.");
+      saveWorkflowToHistory(prompt, result);
+      setHistory([{ steps: result.steps }]);
+      setHistoryIdx(0);
+      setEditMode(false);
+      setActiveNav('workflow');
+    } catch (err: any) {
+      setError(err.message || 'Failed to generate workflow.');
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
 
-  const handleCopy = () => {
-    if (workflow) {
-      navigator.clipboard.writeText(JSON.stringify(workflow, null, 2));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
+  // ---- New workflow ----
+  const handleNewWorkflow = () => {
+    const empty: WorkflowResult = {
+      workflow_metadata: {
+        workflow_name: 'New Workflow',
+        instance_id: `wf_${Date.now()}`,
+        is_template: false,
+        version: '1.0'
+      },
+      steps: []
+    };
+    setWorkflow(empty);
+    setHistory([{ steps: [] }]);
+    setHistoryIdx(0);
+    setEditMode(true);
+    setActiveNav('workflow');
+    setPrompt('');
   };
 
-  const handleEditStep = (step: WorkflowStep) => {
+  // ---- Step editing ----
+  const openEditStep = (step: WorkflowStep, insertAfter?: number) => {
     setEditingStep(step);
     setIsNewStep(false);
-    setIsStepEditorOpen(true);
+    setInsertAfterStepId(insertAfter);
   };
 
-  const handleAddStep = () => {
-    const newStepId = workflow ? Math.max(...workflow.steps.map(s => s.step_id)) + 1 : 1;
-    setEditingStep({
+  const handleAddStep = (insertAfterStepId?: number) => {
+    const maxId = workflow ? Math.max(0, ...workflow.steps.map(s => s.step_id)) : 0;
+    const newStepId = workflow && insertAfterStepId !== undefined
+      ? insertAfterStepId + 1
+      : maxId + 1;
+
+    const newStep: WorkflowStep = {
       step_id: newStepId,
       agent_type: 'Content',
       agent_ids: [],
       action_description: '',
       timing_logic: 'Manual',
-      input_config: { source: 'PM_Input', type: 'Raw_Text' },
-      output_storage: ''
-    });
+      depends_on: insertAfterStepId !== undefined ? [insertAfterStepId] : (maxId > 0 ? [maxId] : []),
+      input_config: { source: 'PM_Input', type: 'Raw_Text', input_type: 'prompt', prompt_text: '' },
+      output_storage: '',
+      inline_comment: '',
+    };
+    setEditingStep(newStep);
     setIsNewStep(true);
-    setIsStepEditorOpen(true);
+    setInsertAfterStepId(insertAfterStepId);
   };
 
-  const handleSaveStep = (step: WorkflowStep) => {
+  const handleSaveStep = (saved: WorkflowStep) => {
     if (!workflow) return;
-
+    let newSteps: WorkflowStep[];
     if (isNewStep) {
-      // Add new step
-      setWorkflow({
-        ...workflow,
-        steps: [...workflow.steps, step].sort((a, b) => a.step_id - b.step_id)
-      });
+      if (insertAfterStepId !== undefined) {
+        const idx = workflow.steps.findIndex(s => s.step_id === insertAfterStepId);
+        newSteps = [...workflow.steps];
+        newSteps.splice(idx + 1, 0, saved);
+      } else {
+        newSteps = [...workflow.steps, saved];
+      }
     } else {
-      // Update existing step
-      setWorkflow({
-        ...workflow,
-        steps: workflow.steps.map(s => s.step_id === step.step_id ? step : s)
-      });
+      newSteps = workflow.steps.map(s => s.step_id === saved.step_id ? saved : s);
     }
+    updateSteps(newSteps);
+    setEditingStep(null);
   };
 
   const handleDeleteStep = (stepId: number) => {
     if (!workflow) return;
-
-    const updatedSteps = workflow.steps
-      .filter(s => s.step_id !== stepId)
-      .map((s, index) => ({ ...s, step_id: index + 1 })); // Reorder step IDs
-
-    setWorkflow({
-      ...workflow,
-      steps: updatedSteps
-    });
+    updateSteps(workflow.steps.filter(s => s.step_id !== stepId));
   };
 
+  // ---- Load template ----
+  const handleLoadTemplate = (wf: WorkflowResult) => {
+    setWorkflow(wf);
+    setHistory([{ steps: wf.steps }]);
+    setHistoryIdx(0);
+    setEditMode(false);
+    setActiveNav('workflow');
+    setShowTemplateModal(false);
+  };
+
+  // ---- Save as template ----
   const handleSaveTemplate = () => {
     if (!workflow || !templateName.trim()) return;
-
-    saveTemplate(workflow, templateName, templateDescription);
-    setSaveTemplateModalOpen(false);
-    setTemplateName('');
-    setTemplateDescription('');
-    alert('Template saved successfully!');
+    saveTemplate(workflow, templateName, templateDesc);
+    // Record learning feedback
+    recordWorkflowFeedback(prompt, workflow, workflow);
+    setTemplateSaved(true);
+    setTimeout(() => {
+      setTemplateSaved(false);
+      setShowSaveTemplate(false);
+      setTemplateName('');
+      setTemplateDesc('');
+    }, 1500);
   };
 
-  const handleLoadTemplate = (loadedWorkflow: WorkflowResult) => {
-    setWorkflow(loadedWorkflow);
-    setActiveTab('visual');
-    setEditMode(false);
+  // ---- Copy JSON ----
+  const handleCopy = () => {
+    if (!workflow) return;
+    navigator.clipboard.writeText(JSON.stringify(workflow, null, 2));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
+
+  // ---- Render ----
+  if (!isLoggedIn) return <LoginScreen onLogin={() => setIsLoggedIn(true)} />;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 pb-20">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="bg-indigo-600 p-2 rounded-lg">
-              <Layout className="w-5 h-5 text-white" />
+    <div className="flex h-screen bg-slate-50 overflow-hidden">
+      {/* ---- Sidebar ---- */}
+      <aside className="w-56 shrink-0 bg-gradient-to-b from-indigo-950 via-slate-900 to-indigo-950 text-white flex flex-col shadow-xl z-20">
+        {/* Logo */}
+        <div className="px-5 py-5 border-b border-white/10">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-gradient-to-br from-indigo-400 to-purple-500 rounded-xl flex items-center justify-center shadow-lg">
+              <Sparkles className="w-5 h-5 text-white" />
             </div>
-            <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-              Orchestrator AI
-            </h1>
-          </div>
-          <div className="flex items-center gap-4">
-            {workflow && (
-              <>
-                <button
-                  onClick={() => setIsTemplateLibraryOpen(true)}
-                  className="text-sm font-medium text-slate-500 hover:text-indigo-600 transition-colors flex items-center gap-2"
-                >
-                  <FileText className="w-4 h-4" />
-                  Templates
-                </button>
-                <button
-                  onClick={() => setEditMode(!editMode)}
-                  className={`text-sm font-medium transition-colors flex items-center gap-2 px-3 py-1.5 rounded-lg ${editMode
-                      ? 'bg-amber-100 text-amber-700'
-                      : 'text-slate-500 hover:text-indigo-600 hover:bg-slate-100'
-                    }`}
-                >
-                  {editMode ? <X className="w-4 h-4" /> : <Edit3 className="w-4 h-4" />}
-                  {editMode ? 'Exit Edit' : 'Edit Mode'}
-                </button>
-                {editMode && (
-                  <button
-                    onClick={() => setSaveTemplateModalOpen(true)}
-                    className="text-sm font-medium text-white bg-gradient-to-r from-emerald-600 to-teal-600 px-3 py-1.5 rounded-lg hover:shadow-lg transition-all flex items-center gap-2"
-                  >
-                    <Save className="w-4 h-4" />
-                    Save as Template
-                  </button>
-                )}
-              </>
-            )}
-            <a
-              href="#"
-              className="text-sm font-medium text-slate-500 hover:text-indigo-600 transition-colors hidden sm:block"
-            >
-              Documentation
-            </a>
-            <div className="h-8 w-8 rounded-full bg-slate-200 flex items-center justify-center text-xs font-bold text-slate-500">
-              PM
+            <div>
+              <div className="font-bold text-sm leading-tight">Orchestrator AI</div>
+              <div className="text-indigo-300 text-xs">v1.0</div>
             </div>
           </div>
         </div>
-      </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Nav items */}
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+          {NAV.map(item => (
+            <button
+              key={item.id}
+              onClick={() => {
+                setActiveNav(item.id);
+                if (item.id === 'templates' && !workflow) setShowTemplateModal(true);
+              }}
+              disabled={item.id !== 'prompt' && item.id !== 'templates' && item.id !== 'agents' && item.id !== 'learning' && !workflow}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all group
+                ${activeNav === item.id
+                  ? 'bg-white/15 text-white shadow-inner'
+                  : 'text-indigo-200 hover:bg-white/10 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed'
+                }`}
+            >
+              <span className={`shrink-0 ${activeNav === item.id ? 'text-indigo-300' : 'text-indigo-400 group-hover:text-indigo-200'}`}>
+                {item.icon}
+              </span>
+              {item.label}
+              {activeNav === item.id && <ChevronRight className="w-3.5 h-3.5 ml-auto text-indigo-300" />}
+            </button>
+          ))}
+        </nav>
 
-        {/* Input Section */}
-        <section className="max-w-3xl mx-auto mb-12">
-          <div className="text-center mb-8">
-            <h2 className="text-3xl font-bold text-slate-900 mb-3">Architect Your Workflow</h2>
-            <p className="text-lg text-slate-600">
-              Describe a business goal, and our AI will orchestrate a technical, agent-based execution plan.
-            </p>
+        {/* New Workflow & Logout at bottom */}
+        <div className="px-3 pb-4 space-y-2 border-t border-white/10 pt-3">
+          <button
+            onClick={handleNewWorkflow}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium text-indigo-200 hover:bg-white/10 hover:text-white transition-all"
+          >
+            <PlusSquare className="w-5 h-5 text-indigo-400" />
+            New Workflow
+          </button>
+          <button
+            onClick={() => { sessionStorage.removeItem('oai_logged_in'); setIsLoggedIn(false); }}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium text-indigo-400 hover:bg-red-500/20 hover:text-red-300 transition-all"
+          >
+            <X className="w-5 h-5" />
+            Sign Out
+          </button>
+        </div>
+      </aside>
+
+      {/* ---- Main Content ---- */}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {/* ---- Top bar ---- */}
+        <header className="shrink-0 bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            {workflow ? (
+              <h1 className="font-bold text-slate-800 text-sm truncate">
+                {workflow.workflow_metadata.workflow_name}
+                <span className="ml-2 text-xs font-normal text-slate-400">
+                  v{workflow.workflow_metadata.version} · {workflow.steps.length} step{workflow.steps.length !== 1 ? 's' : ''}
+                </span>
+              </h1>
+            ) : (
+              <h1 className="font-bold text-slate-800 text-sm">AI Orchestrator Platform</h1>
+            )}
           </div>
 
-          <form onSubmit={handleSubmit} className="relative">
-            <div className="bg-white rounded-2xl shadow-xl shadow-indigo-100/50 p-2 border border-slate-200 focus-within:border-indigo-400 focus-within:ring-4 focus-within:ring-indigo-100 transition-all">
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="E.g., Automate a competitive analysis pipeline that scrapes pricing pages, stores data in Snowflake, and generates a PDF report..."
-                className="w-full h-32 p-4 bg-transparent border-none focus:ring-0 text-lg resize-none placeholder:text-slate-300"
-              />
-              <div className="flex justify-between items-center px-4 pb-2">
-                <div className="flex items-center gap-2 bg-slate-50 px-2 py-1 rounded-md border border-slate-200">
-                  <Cpu className="w-3.5 h-3.5 text-slate-400" />
-                  <span className="text-xs font-medium text-slate-500">Engine:</span>
-                  <select
-                    value={provider}
-                    onChange={(e) => setProvider(e.target.value as LLMProvider)}
-                    className="text-xs font-semibold text-indigo-600 bg-transparent border-none rounded focus:ring-0 cursor-pointer outline-none"
-                  >
-                    <option value="openai">GPT-4o</option>
-                  </select>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={loading || !prompt.trim()}
-                  className={`flex items-center gap-2 px-6 py-2.5 rounded-xl font-semibold text-white transition-all transform hover:scale-105 active:scale-95 ${loading || !prompt.trim()
-                    ? 'bg-slate-300 cursor-not-allowed'
-                    : 'bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-200'
-                    }`}
-                >
-                  {loading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Architecting...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-4 h-4" />
-                      Generate Workflow
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </form>
-
-          {error && (
-            <div className="mt-4 p-4 bg-red-50 border border-red-100 rounded-xl flex items-start gap-3 text-red-700">
-              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-              <p className="text-sm">{error}</p>
-            </div>
-          )}
-        </section>
-
-        {/* Results Section */}
-        {workflow && (
-          <section className="animate-fade-in-up">
-            <div className="flex items-center justify-center gap-2 mb-8">
-              <div className="bg-slate-100 p-1 rounded-lg inline-flex">
-                <button
-                  onClick={() => setActiveTab('visual')}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'visual' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                    }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Layout className="w-4 h-4" />
-                    Visual Flow
-                  </div>
-                </button>
-                <button
-                  onClick={() => setActiveTab('analytics')}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'analytics' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                    }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Play className="w-4 h-4 rotate-90" />
-                    Analytics
-                  </div>
-                </button>
-                <button
-                  onClick={() => setActiveTab('json')}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'json' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                    }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Code2 className="w-4 h-4" />
-                    JSON Output
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            <div className="transition-all duration-300">
-              {activeTab === 'visual' && (
-                <WorkflowVisualizer
-                  data={workflow}
-                  editMode={editMode}
-                  onEditStep={handleEditStep}
-                  onDeleteStep={handleDeleteStep}
-                  onAddStep={handleAddStep}
-                />
-              )}
-
-              {activeTab === 'analytics' && <AnalyticsDashboard data={workflow} />}
-
-              {activeTab === 'json' && (
-                <div className="max-w-4xl mx-auto">
-                  <div className="bg-[#1e293b] rounded-xl overflow-hidden shadow-2xl">
-                    <div className="flex items-center justify-between px-4 py-3 bg-[#0f172a] border-b border-slate-700">
-                      <span className="text-xs font-mono text-slate-400">workflow.json</span>
-                      <button
-                        onClick={handleCopy}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
-                      >
-                        {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <ClipboardCopy className="w-3.5 h-3.5" />}
-                        {copied ? 'Copied' : 'Copy JSON'}
-                      </button>
-                    </div>
-                    <pre className="p-6 overflow-x-auto custom-scrollbar">
-                      <code className="font-mono text-sm text-blue-300">
-                        {JSON.stringify(workflow, null, 2)}
-                      </code>
-                    </pre>
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-        )}
-      </main>
-
-      {/* Step Editor Modal */}
-      <StepEditor
-        step={editingStep}
-        isOpen={isStepEditorOpen}
-        onClose={() => {
-          setIsStepEditorOpen(false);
-          setEditingStep(null);
-        }}
-        onSave={handleSaveStep}
-        isNewStep={isNewStep}
-      />
-
-      {/* Template Library Modal */}
-      <TemplateLibrary
-        isOpen={isTemplateLibraryOpen}
-        onClose={() => setIsTemplateLibraryOpen(false)}
-        onLoadTemplate={handleLoadTemplate}
-      />
-
-      {/* Save Template Modal */}
-      {saveTemplateModalOpen && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
-            <h3 className="text-xl font-bold text-gray-900 mb-4">Save as Template</h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Template Name *
-                </label>
-                <input
-                  type="text"
-                  value={templateName}
-                  onChange={(e) => setTemplateName(e.target.value)}
-                  placeholder="e.g., Newsletter Campaign Workflow"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Description (Optional)
-                </label>
-                <textarea
-                  value={templateDescription}
-                  onChange={(e) => setTemplateDescription(e.target.value)}
-                  placeholder="Brief description of this workflow template..."
-                  rows={3}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
-                />
-              </div>
-            </div>
-            <div className="flex gap-3 mt-6">
+          {/* Toolbar for workflow view */}
+          {workflow && activeNav === 'workflow' && (
+            <div className="flex items-center gap-2">
+              {/* Undo/Redo */}
               <button
-                onClick={() => {
-                  setSaveTemplateModalOpen(false);
-                  setTemplateName('');
-                  setTemplateDescription('');
-                }}
-                className="flex-1 px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg font-medium transition-colors"
+                onClick={undo} disabled={historyIdx <= 0}
+                title="Undo"
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 disabled:opacity-30 transition-colors"
+              ><Undo2 className="w-4 h-4" /></button>
+              <button
+                onClick={redo} disabled={historyIdx >= history.length - 1}
+                title="Redo"
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 disabled:opacity-30 transition-colors"
+              ><Redo2 className="w-4 h-4" /></button>
+
+              <div className="w-px h-5 bg-slate-200" />
+
+              {/* Edit mode toggle */}
+              <button
+                onClick={() => setEditMode(e => !e)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${editMode ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
               >
-                Cancel
+                <Edit3 className="w-4 h-4" />
+                {editMode ? 'Editing' : 'Edit'}
               </button>
+
+              {/* Copy JSON */}
               <button
-                onClick={handleSaveTemplate}
-                disabled={!templateName.trim()}
-                className="flex-1 px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-lg font-medium hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                onClick={handleCopy}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 text-sm font-medium transition-all"
+              >
+                {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <History className="w-4 h-4" />}
+                {copied ? 'Copied!' : 'Copy JSON'}
+              </button>
+
+              {/* Save as Template */}
+              <button
+                onClick={() => setShowSaveTemplate(s => !s)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:bg-emerald-200 text-sm font-medium transition-all"
               >
                 <Save className="w-4 h-4" />
                 Save Template
               </button>
+
+              {/* Template Library */}
+              <button
+                onClick={() => setShowTemplateModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 text-sm font-medium transition-all"
+              >
+                <FileText className="w-4 h-4" />
+                Templates
+              </button>
             </div>
+          )}
+        </header>
+
+        {/* ---- Save Template inline panel ---- */}
+        {showSaveTemplate && workflow && (
+          <div className="shrink-0 bg-emerald-50 border-b border-emerald-200 px-6 py-3 flex items-center gap-3">
+            <Save className="w-4 h-4 text-emerald-600 shrink-0" />
+            <input
+              type="text"
+              value={templateName}
+              onChange={e => setTemplateName(e.target.value)}
+              placeholder="Template name*"
+              className="px-3 py-1.5 border border-emerald-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 w-48"
+            />
+            <input
+              type="text"
+              value={templateDesc}
+              onChange={e => setTemplateDesc(e.target.value)}
+              placeholder="Description (optional)"
+              className="flex-1 px-3 py-1.5 border border-emerald-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500"
+            />
+            <button
+              onClick={handleSaveTemplate}
+              disabled={!templateName.trim() || templateSaved}
+              className="px-4 py-1.5 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+            >
+              {templateSaved ? <><Check className="w-4 h-4" /> Saved!</> : 'Save'}
+            </button>
+            <button onClick={() => setShowSaveTemplate(false)} className="p-1 text-slate-400 hover:text-slate-700">
+              <X className="w-4 h-4" />
+            </button>
           </div>
+        )}
+
+        {/* ---- Scrollable page content ---- */}
+        <div className={`flex-1 ${activeNav === 'workflow' ? 'overflow-hidden' : 'overflow-auto'}`}>
+
+          {/* ===== PROMPT page ===== */}
+          {activeNav === 'prompt' && (
+            <div className="h-full flex flex-col">
+              {/* Prompt input area */}
+              <div className="shrink-0 p-6 bg-white border-b border-slate-200">
+                <h2 className="text-lg font-bold text-slate-800 mb-4">Describe your business use case</h2>
+                <textarea
+                  value={prompt}
+                  onChange={e => setPrompt(e.target.value)}
+                  rows={5}
+                  placeholder="e.g. Generate and distribute a weekly content marketing campaign — research trending topics, create blog posts, design social graphics, schedule posts, and track engagement analytics..."
+                  className="w-full px-4 py-3 border border-slate-300 rounded-xl resize-none text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
+                  onKeyDown={e => { if (e.key === 'Enter' && e.ctrlKey) handleGenerate(); }}
+                />
+                <div className="flex items-center justify-between mt-3">
+                  <p className="text-xs text-slate-400">Ctrl+Enter to generate · GPT-4o</p>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={handleNewWorkflow}
+                      className="flex items-center gap-2 px-4 py-2.5 border-2 border-indigo-300 text-indigo-600 rounded-xl font-medium hover:bg-indigo-50 transition-all text-sm"
+                    >
+                      <PlusSquare className="w-4 h-4" />
+                      New Blank Workflow
+                    </button>
+                    <button
+                      onClick={handleGenerate}
+                      disabled={!prompt.trim() || isLoading}
+                      className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-semibold hover:shadow-lg hover:shadow-indigo-200 transition-all disabled:opacity-60 text-sm"
+                    >
+                      {isLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> Generating…</> : <><Sparkles className="w-4 h-4" /> Generate Workflow</>}
+                    </button>
+                  </div>
+                </div>
+
+                {error && (
+                  <div className="mt-3 flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-red-700 text-sm">
+                    <AlertCircle className="w-4 h-4 shrink-0" />{error}
+                  </div>
+                )}
+              </div>
+
+              {/* Templates visible on home page (#9) */}
+              <div className="flex-1 overflow-auto p-6">
+                <h3 className="text-base font-semibold text-slate-700 mb-4 flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-slate-500" />
+                  Saved Templates
+                  <span className="text-xs font-normal text-slate-400">(click to load)</span>
+                </h3>
+                <TemplateLibrary
+                  isOpen={true}
+                  onClose={() => { }}
+                  onLoadTemplate={handleLoadTemplate}
+                  inline={true}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ===== WORKFLOW page ===== */}
+          {activeNav === 'workflow' && (
+            <div className="h-full">
+              {workflow ? (
+                <WorkflowVisualizer
+                  data={workflow}
+                  editMode={editMode}
+                  onEditStep={openEditStep}
+                  onDeleteStep={handleDeleteStep}
+                  onAddStep={handleAddStep}
+                  onReorderSteps={newSteps => updateSteps(newSteps)}
+                />
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-slate-400">
+                  <Zap className="w-16 h-16 mb-4 opacity-20" />
+                  <p className="font-medium text-slate-600">No workflow yet</p>
+                  <p className="text-sm mt-1">Generate one from the Prompt tab, or create a blank workflow.</p>
+                  <button
+                    onClick={handleNewWorkflow}
+                    className="mt-4 flex items-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-medium hover:shadow-lg transition-all text-sm"
+                  >
+                    <PlusSquare className="w-4 h-4" /> New Blank Workflow
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ===== ANALYTICS page ===== */}
+          {activeNav === 'analytics' && workflow && (
+            <AnalyticsDashboard data={workflow} />
+          )}
+
+          {/* ===== TEMPLATES page ===== */}
+          {activeNav === 'templates' && (
+            <TemplateLibrary isOpen={true} onClose={() => setActiveNav('prompt')} onLoadTemplate={handleLoadTemplate} inline={true} />
+          )}
+
+          {/* ===== AGENT LIBRARY page ===== */}
+          {activeNav === 'agents' && <AgentLibraryPage />}
+
+          {/* ===== LEARNING page ===== */}
+          {activeNav === 'learning' && <LearningDashboard />}
+
+          {/* ===== EXECUTION page ===== */}
+          {activeNav === 'execution' && workflow && (
+            <ExecutionMonitor workflow={workflow} onUpdateWorkflow={setWorkflow} />
+          )}
         </div>
+      </main>
+
+      {/* ---- Template Library Modal ---- */}
+      {showTemplateModal && (
+        <TemplateLibrary
+          isOpen={showTemplateModal}
+          onClose={() => setShowTemplateModal(false)}
+          onLoadTemplate={handleLoadTemplate}
+          inline={false}
+        />
+      )}
+
+      {/* ---- Step Editor Modal ---- */}
+      {editingStep && (
+        <StepEditor
+          step={editingStep}
+          isOpen={!!editingStep}
+          onClose={() => setEditingStep(null)}
+          onSave={handleSaveStep}
+          isNewStep={isNewStep}
+          insertAfterStepId={insertAfterStepId}
+          allSteps={workflow?.steps || []}
+        />
       )}
     </div>
   );
