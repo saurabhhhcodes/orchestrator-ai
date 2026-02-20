@@ -60,7 +60,7 @@ const generateWithOpenAI = async (useCase: string, learningContext: string = '')
       "action_description": "string (detailed technical description)",
       "timing_logic": "string (Manual/Auto/Trigger/Recurring)",
       "parallel_group": "string or null (steps with same group run in parallel)",
-      "depends_on": "array of step_ids this step waits for, or empty array",
+      "depends_on": "array of step_ids this step waits for. MUST NOT BE EMPTY unless it is step 1. For sequential flows without parallel_group, always include [previous_step_id].",
       "input_config": {
         "source": "string (e.g., PM_Input or Agent_ID_1_JSON_Output)",
         "type": "string (e.g., JSON, CSV, PNG, Raw Text)",

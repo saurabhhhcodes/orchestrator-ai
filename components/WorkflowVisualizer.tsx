@@ -108,10 +108,15 @@ interface StepCardProps {
   onAddAfter?: () => void;
   onMoveLeft?: () => void;
   onMoveRight?: () => void;
+  draggable?: boolean;
+  onDragStart?: (e: React.DragEvent) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDrop?: (e: React.DragEvent) => void;
+  isDragTarget?: boolean;
 }
 
 const StepCard = React.forwardRef<HTMLDivElement, StepCardProps>((
-  { step, stepNum, editMode, onClick, onEdit, onDelete, onAddBefore, onAddAfter, onMoveLeft, onMoveRight }, ref
+  { step, stepNum, editMode, onClick, onEdit, onDelete, onAddBefore, onAddAfter, onMoveLeft, onMoveRight, draggable, onDragStart, onDragOver, onDrop, isDragTarget }, ref
 ) => {
   const ac = getAC(step.agent_type);
   const statusRing = STATUS_RING[step.execution_status || 'pending'];
@@ -121,7 +126,11 @@ const StepCard = React.forwardRef<HTMLDivElement, StepCardProps>((
       ref={ref}
       data-step-id={step.step_id}
       onClick={onClick}
-      className={`bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-indigo-300 transition-all duration-300 cursor-pointer w-60 shrink-0 select-none group ${statusRing}`}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className={`bg-white rounded-2xl border ${isDragTarget ? 'border-indigo-500 ring-2 ring-indigo-200' : 'border-slate-200'} shadow-sm hover:shadow-xl hover:border-indigo-300 transition-all duration-300 cursor-pointer w-60 shrink-0 select-none group ${statusRing}`}
       style={{ boxShadow: '0 4px 20px rgba(99,102,241,0.06), 0 1px 4px rgba(0,0,0,0.04)' }}
     >
       {/* Step number badge */}
@@ -375,6 +384,10 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
   const [chats, setChats] = useState<Record<number, { messages: ChatMessage[]; loading: boolean }>>({});
   const [chatInputs, setChatInputs] = useState<Record<number, string>>({});
 
+  // Drag and drop state
+  const [draggedId, setDraggedId] = useState<number | null>(null);
+  const [dragTargetId, setDragTargetId] = useState<number | null>(null);
+
   // View options
   const [lineStyle, setLineStyle] = useState<'bezier' | 'straight'>('bezier');
   const [bgStyle, setBgStyle] = useState<'dots' | 'grid' | 'clean'>('dots');
@@ -412,13 +425,66 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
     }
   }, [chatInputs, chats, data.workflow_metadata.workflow_name]);
 
+  const remapStepIds = (steps: WorkflowStep[]) => {
+    // 1. Create mapping from old ID to new ID
+    const idMap = new Map<number, number>();
+    steps.forEach((s, i) => idMap.set(s.step_id, i + 1));
+
+    // 2. Apply new IDs and remap all dependencies
+    return steps.map((s, i) => {
+      const newS = { ...s, step_id: i + 1 };
+      if (newS.depends_on) newS.depends_on = newS.depends_on.map(id => idMap.get(id) || id).sort();
+      if (newS.auto_depends_on) newS.auto_depends_on = newS.auto_depends_on.map(id => idMap.get(id) || id).sort();
+      if (newS.input_config?.prior_step_ids) {
+        newS.input_config.prior_step_ids = newS.input_config.prior_step_ids.map(id => idMap.get(id) || id).sort();
+      }
+      return newS;
+    });
+  };
+
   const moveStep = (index: number, dir: -1 | 1) => {
     if (!onReorderSteps) return;
     const steps = [...data.steps];
     const ti = index + dir;
     if (ti < 0 || ti >= steps.length) return;
     [steps[index], steps[ti]] = [steps[ti], steps[index]];
-    onReorderSteps(steps.map((s, i) => ({ ...s, step_id: i + 1 })));
+    onReorderSteps(remapStepIds(steps));
+  };
+
+  const handleDragStart = (e: React.DragEvent, stepId: number) => {
+    if (!editMode || !onReorderSteps) {
+      e.preventDefault();
+      return;
+    }
+    setDraggedId(stepId);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, stepId: number) => {
+    e.preventDefault(); // Necessary to allow dropping
+    if (!editMode || draggedId === null || draggedId === stepId) return;
+    e.dataTransfer.dropEffect = 'move';
+    if (dragTargetId !== stepId) setDragTargetId(stepId);
+  };
+
+  const handleDrop = (e: React.DragEvent, targetStepId: number) => {
+    e.preventDefault();
+    setDragTargetId(null);
+    if (!editMode || !onReorderSteps || draggedId === null || draggedId === targetStepId) {
+      setDraggedId(null);
+      return;
+    }
+
+    const steps = [...data.steps];
+    const sourceIdx = steps.findIndex(s => s.step_id === draggedId);
+    const targetIdx = steps.findIndex(s => s.step_id === targetStepId);
+
+    if (sourceIdx !== -1 && targetIdx !== -1) {
+      const [movedStep] = steps.splice(sourceIdx, 1);
+      steps.splice(targetIdx, 0, movedStep);
+      onReorderSteps(remapStepIds(steps));
+    }
+    setDraggedId(null);
   };
 
   // ── Reliable position measurement via offsetParent traversal ──────────────
@@ -637,6 +703,11 @@ const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({
                               onAddAfter={onAddStep ? () => onAddStep(step.step_id) : undefined}
                               onMoveLeft={onReorderSteps && globalIdx > 0 ? () => moveStep(globalIdx, -1) : undefined}
                               onMoveRight={onReorderSteps && globalIdx < data.steps.length - 1 ? () => moveStep(globalIdx, 1) : undefined}
+                              draggable={editMode && !!onReorderSteps}
+                              onDragStart={(e) => handleDragStart(e, step.step_id)}
+                              onDragOver={(e) => handleDragOver(e, step.step_id)}
+                              onDrop={(e) => handleDrop(e, step.step_id)}
+                              isDragTarget={dragTargetId === step.step_id}
                             />
                           </div>
                         );
